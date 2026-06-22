@@ -890,18 +890,27 @@ function curveCards() {
     const cards = document.querySelectorAll(".cards .card");
     const count = cards.length;
     const middle = (count - 1) / 2;
-    const spread = 35;
+
+    const isMobile = window.innerWidth <= 768;
+    const spread = isMobile ? 31 : 35;
+    const baseY = isMobile ? 18 : 0;
+    const maxRotate = isMobile ? 8 : 8;
+
+    const container = document.querySelector(".cards");
+    const center = container ? container.offsetWidth / 2 : window.innerWidth / 2;
 
     cards.forEach((card, i) => {
         const offset = i - middle;
-        const y = Math.abs(offset) * 2;
-        const rotate = offset * 1.2;
+        const rotate = middle === 0 ? 0 : offset * (maxRotate / middle);
+        const y = baseY + Math.abs(offset) * 2;
 
-        card.style.left = `${260 + offset * spread}px`;
+        card.style.position = "absolute";
+        card.style.left = `${center + offset * spread}px`;
+        card.style.bottom = "0px";
         card.style.transform =
             `translateX(-50%) translateY(${y}px) rotate(${rotate}deg)`;
 
-        card.style.zIndex = 1; // مهم: يخلي الأوراق خلف الصندوق
+        card.style.zIndex = i + 1;
     });
 }
 
@@ -1085,40 +1094,18 @@ function renderGame() {
                 : "؟";
 
     const myName = currentUser?.name || "أنت";
-    const stats = getUserStats(myName);
 
     document.body.innerHTML = `
         <div id="game-container">
-        <button class="mobile-panel-toggle" onclick="toggleMobilePanel()" aria-label="القائمة">☰</button>
-        <div class="mobile-panel-overlay" id="mobile-panel-overlay" onclick="toggleMobilePanel()"></div>
-        <div class="left-panel">
-            <div class="player-profile-card">
-                <div class="player-profile-top">
-                    <div>
-                        <p class="profile-label">الغرفة</p>
-                        <h3>${onlineRoomId || "فردية"}</h3>
-                    </div>
-                </div>
-                <div class="stats-grid">
-                    <div class="stat-pill">
-                        <span>اللاعبون</span>
-                        <strong>${onlineRoomPlayers.filter(p => !p.isBot).length || 1}/4</strong>
-                    </div>
-                    <div class="stat-pill">
-                        <span>موقعك</span>
-                        <strong>#${myOnlineIndex + 1}</strong>
-                    </div>
-                </div>
-            </div>
 
-            <div class="side-panel">
-                <button class="panel-btn" onclick="exitGame()">خروج</button>
-                <button class="panel-btn" onclick="showHelpModal()">مساعدة</button>
-                <button class="panel-btn" onclick="shareGame()">مشاركة</button>
-                <button class="panel-btn" onclick="toggleSound()">الصوت</button>
-            </div>
+            <button class="mobile-panel-toggle" onclick="toggleMobilePanel()" aria-label="القائمة">☰</button>
 
-            <div class="score-panel">
+
+            <button class="mobile-exit-btn" onclick="exitGame()">خروج</button>
+            
+            <div class="mobile-panel-overlay" id="mobile-panel-overlay" onclick="toggleMobilePanel()"></div>
+
+            <div class="mobile-score-panel">
                 <table>
                     <tr>
                         <th>فريقك</th>
@@ -1131,135 +1118,179 @@ function renderGame() {
                 </table>
             </div>
 
-            <div class="chat-section">
-                <div class="chat-header">💬 الدردشة</div>
-                <div class="chat-messages" id="chat-messages"></div>
-                <div class="chat-input-row">
-                    <input
-                        id="chat-input"
-                        type="text"
-                        placeholder="اكتب رسالة..."
-                        maxlength="200"
-                        onkeydown="if(event.key==='Enter') sendChatMessage()"
-                        autocomplete="off"
-                    >
-                    <button onclick="sendChatMessage()" class="chat-send-btn">إرسال</button>
-                </div>
-            </div>
-        </div>
-
-        <div class="game-table">
-            <div id="game-message"></div>
-            <div id="objection-box">&nbsp;</div>
-
-            <div class="top-player">
-                <div class="player-card ${currentPlayer === topIndex ? 'active-player' : ''}">
-                    <img class="player-avatar" src="images/default-avatar.png">
-
-                    <div class="player-name">
-                        ${getOnlinePlayerName(topIndex)}
-                        ${objectionPlayer === topIndex ? "⚠️" : ""}
-                    </div>
-                </div>
-
-                ${renderBackCards(topIndex, true)}
-
-                <div class="top-stack-row" onclick="takeFromStack(${topIndex})">
-                    ${getTopStackHtml(topIndex)}
-                </div>
-            </div>
-
-            <div class="middle-row">
-                <div class="side-player left-side">
-                    <div class="player-card ${currentPlayer === leftIndex ? 'active-player' : ''}">
-                        <img class="player-avatar" src="images/default-avatar.png">
-
-                        <div class="player-name">
-                            ${getOnlinePlayerName(leftIndex)}
-                            ${objectionPlayer === leftIndex ? "⚠️" : ""}
+            <div class="left-panel">
+                <div class="player-profile-card">
+                    <div class="player-profile-top">
+                        <div>
+                            <p class="profile-label">الغرفة</p>
+                            <h3>${onlineRoomId || "فردية"}</h3>
                         </div>
                     </div>
 
-                    ${renderBackCards(leftIndex)}
+                    <div class="stats-grid">
+                        <div class="stat-pill">
+                            <span>اللاعبون</span>
+                            <strong>${onlineRoomPlayers.filter(p => !p.isBot).length || 1}/4</strong>
+                        </div>
 
-                    <div class="stack" onclick="takeFromStack(${leftIndex})">
-                        ${getTopStackHtml(leftIndex)}
+                        <div class="stat-pill">
+                            <span>موقعك</span>
+                            <strong>#${myOnlineIndex + 1}</strong>
+                        </div>
                     </div>
                 </div>
 
-                <div class="field">
-                    <h3>الميدان</h3>
-
-                    <div class="field-cards">
-                        ${fieldHtml}
-                    </div>
+                <div class="side-panel">
+                    <button class="panel-btn" onclick="exitGame()">خروج</button>
+                    <button class="panel-btn" onclick="showHelpModal()">مساعدة</button>
+                    <button class="panel-btn" onclick="shareGame()">مشاركة</button>
+                    <button class="panel-btn" onclick="toggleSound()">الصوت</button>
                 </div>
 
-                <div class="side-player right-side">
-                    <div class="player-card ${currentPlayer === rightIndex ? 'active-player' : ''}">
+                <div class="score-panel">
+                    <table>
+                        <tr>
+                            <th>فريقك</th>
+                            <th>الخصوم</th>
+                        </tr>
+                        <tr>
+                            <td>${getMyTeamPoints()}</td>
+                            <td>${getEnemyTeamPoints()}</td>
+                        </tr>
+                    </table>
+                </div>
+
+                <div class="chat-section">
+                    <div class="chat-header">💬 الدردشة</div>
+
+                    <div class="chat-messages" id="chat-messages"></div>
+
+                    <div class="chat-input-row">
+                        <input
+                            id="chat-input"
+                            type="text"
+                            placeholder="اكتب رسالة..."
+                            maxlength="200"
+                            onkeydown="if(event.key==='Enter') sendChatMessage()"
+                            autocomplete="off"
+                        >
+
+                        <button onclick="sendChatMessage()" class="chat-send-btn">إرسال</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="game-table">
+                <div id="game-message"></div>
+                <div id="objection-box">&nbsp;</div>
+
+                <div class="top-player">
+                    <div class="player-card ${currentPlayer === topIndex ? 'active-player' : ''}">
                         <img class="player-avatar" src="images/default-avatar.png">
 
                         <div class="player-name">
-                            ${getOnlinePlayerName(rightIndex)}
-                            ${objectionPlayer === rightIndex ? "⚠️" : ""}
+                            ${getOnlinePlayerName(topIndex)}
+                            ${objectionPlayer === topIndex ? "⚠️" : ""}
                         </div>
                     </div>
 
-                    ${renderBackCards(rightIndex)}
+                    ${renderBackCards(topIndex, true)}
 
-                    <div class="stack" onclick="takeFromStack(${rightIndex})">
-                        ${getTopStackHtml(rightIndex)}
+                    <div class="top-stack-row" onclick="takeFromStack(${topIndex})">
+                        ${getTopStackHtml(topIndex)}
                     </div>
                 </div>
-            </div>
 
-            <div class="my-stack">
-                <h3>
-                    تجميع ${myName}
-                    ${objectionPlayer === bottomIndex ? "⚠️" : ""}
-                </h3>
+                <div class="middle-row">
+                    <div class="side-player left-side">
+                        <div class="player-card ${currentPlayer === leftIndex ? 'active-player' : ''}">
+                            <img class="player-avatar" src="images/default-avatar.png">
 
-                <div class="stack">
-                    ${myTopStack}
+                            <div class="player-name">
+                                ${getOnlinePlayerName(leftIndex)}
+                                ${objectionPlayer === leftIndex ? "⚠️" : ""}
+                            </div>
+                        </div>
+
+                        ${renderBackCards(leftIndex)}
+
+                        <div class="stack" onclick="takeFromStack(${leftIndex})">
+                            ${getTopStackHtml(leftIndex)}
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <h3>الميدان</h3>
+
+                        <div class="field-cards">
+                            ${fieldHtml}
+                        </div>
+                    </div>
+
+                    <div class="side-player right-side">
+                        <div class="player-card ${currentPlayer === rightIndex ? 'active-player' : ''}">
+                            <img class="player-avatar" src="images/default-avatar.png">
+
+                            <div class="player-name">
+                                ${getOnlinePlayerName(rightIndex)}
+                                ${objectionPlayer === rightIndex ? "⚠️" : ""}
+                            </div>
+                        </div>
+
+                        ${renderBackCards(rightIndex)}
+
+                        <div class="stack" onclick="takeFromStack(${rightIndex})">
+                            ${getTopStackHtml(rightIndex)}
+                        </div>
+                    </div>
                 </div>
-            </div>
 
-            ${canHumanObject()
-                ? `<button class="objection-btn" onclick="objectNow()">اعتراض (${objectionSeconds})</button>`
-                : ""}
-
-            <div class="cards-wrapper">
-                <div class="cards">
-                    ${myCardsHtml}
-                </div>
-            </div>
-
-            <div class="my-cards">
-                <div class="bottom-profile">
-                    <div class="bottom-name">
-                        ${myName}
+                <div class="my-stack">
+                    <h3>
+                        تجميع ${myName}
                         ${objectionPlayer === bottomIndex ? "⚠️" : ""}
+                    </h3>
+
+                    <div class="stack">
+                        ${myTopStack}
+                    </div>
+                </div>
+
+                ${canHumanObject()
+                    ? `<button class="objection-btn" onclick="objectNow()">اعتراض (${objectionSeconds})</button>`
+                    : ""}
+
+                <div class="cards-wrapper">
+                    <div class="cards">
+                        ${myCardsHtml}
+                    </div>
+                </div>
+
+                <div class="my-cards">
+                    <div class="bottom-profile">
+                        <div class="bottom-name">
+                            ${myName}
+                            ${objectionPlayer === bottomIndex ? "⚠️" : ""}
+                        </div>
+
+                        <img
+                            class="bottom-avatar ${currentPlayer === bottomIndex ? 'active-avatar' : ''}"
+                            src="images/default-avatar.png"
+                        >
                     </div>
 
-                    <img
-                        class="bottom-avatar ${currentPlayer === bottomIndex ? 'active-avatar' : ''}"
-                        src="images/default-avatar.png"
-                    >
-                </div>
-
-                <div class="action-buttons">
-                    <button onclick="drawCard()">سحب</button>
-                    <button onclick="dropCard()">تنزيل</button>
+                    <div class="action-buttons">
+                        <button onclick="drawCard()">سحب</button>
+                        <button onclick="dropCard()">تنزيل</button>
+                    </div>
                 </div>
             </div>
-        </div>
         </div>
     `;
 
     curveCards();
     enableDragSelect();
 
-    // Restore previous chat messages after re-render
     chatMessages.forEach(msg => appendChatMessage(msg, true));
 
     setTimeout(() => {
@@ -1432,6 +1463,11 @@ function drawCard() {
 function dropCard() {
     const localPlayerIndex = onlineRoomId ? myOnlineIndex : 0;
 
+    if (objectionTimer) {
+        showMessage("لا يمكنك التنزيل أثناء وقت الاعتراض");
+        return;
+    }
+
     if (currentPlayer !== localPlayerIndex) {
         showMessage("ليس دورك حالياً");
         return;
@@ -1442,20 +1478,21 @@ function dropCard() {
         return;
     }
 
-    const handCard = gameState.players[localPlayerIndex].hand[selectedCardIndex];
+    const myHand = gameState.players[localPlayerIndex].hand;
+    const handCard = myHand[selectedCardIndex];
+    const isLastCard = myHand.length === 1;
+    const deckIsEmpty = !gameState.deck || gameState.deck.length === 0;
 
-    const exists = gameState.field.some(card =>
-        card.rank === handCard.rank
-    );
+    // القاعدة الأصلية: ممنوع تنزيل رتبة موجودة في الميدان.
+    // لكن عند نهاية اللعب، إذا كانت هذه آخر ورقة والرزمة انتهت، نسمح بتنزيلها حتى لا تتعلق الجولة.
+    const exists = gameState.field.some(card => card.rank === handCard.rank);
 
-    if (exists) {
-        showMessage("لا يجوز تنزيل زات موجودة في الميدان");
+    if (exists && !(isLastCard && deckIsEmpty)) {
+        showMessage("لا يجوز تنزيل ذات موجودة في الميدان");
         return;
     }
 
-    gameState.field.push(
-        gameState.players[localPlayerIndex].hand.splice(selectedCardIndex, 1)[0]
-    );
+    gameState.field.push(myHand.splice(selectedCardIndex, 1)[0]);
 
     playSound("card");
 
@@ -1464,6 +1501,7 @@ function dropCard() {
     selectedCardIndex = null;
 
     nextTurn();
+    syncOnlineGame();
 }
 function isRoundFinished() {
 
@@ -2026,11 +2064,11 @@ function endRound() {
 
     // إرسال النتائج للخادم
     const winner = myPoints > enemyPoints ? "فريقك" : (enemyPoints > myPoints ? "الخصوم" : "");
-    const playersResults = game.players.map(p => ({
-        username: p.username,
-        points: p.team === 0 || p.team === 2 ? myPoints : enemyPoints,
-        isWinner: winner === "فريقك" && (p.team === 0 || p.team === 2) || 
-                  winner === "الخصوم" && (p.team === 1 || p.team === 3)
+    const playersResults = gameState.players.map((p, index) => ({
+        username: p.name || `لاعب ${index + 1}`,
+        points: index === 0 || index === 2 ? myPoints : enemyPoints,
+        isWinner: (winner === "فريقك" && (index === 0 || index === 2)) ||
+                  (winner === "الخصوم" && (index === 1 || index === 3))
     }));
 
     // إرسال نتائج اللاعبين الحقيقيين فقط
@@ -2616,5 +2654,22 @@ socket.on("gameSynced", (data) => {
 
     if (pendingCapture && objectionRank && !objectionTimer) {
         startObjection(false);
+    }
+});
+
+window.addEventListener("load", () => {
+    try {
+        const savedUser = localStorage.getItem("mujabeedUser");
+
+        if (savedUser) {
+            currentUser = JSON.parse(savedUser);
+            showMainMenu();
+        } else {
+            showEntryPage();
+        }
+    } catch (e) {
+        console.error(e);
+        localStorage.removeItem("mujabeedUser");
+        showEntryPage();
     }
 });
