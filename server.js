@@ -11,9 +11,57 @@ app.use(express.static(path.join(__dirname, "public")));
 
 let waitingPlayers = [];
 const rooms = new Map();
+const publicRooms = new Map(); // roomId -> { title, location, hostName, createdAt }
+
+// نظام إحصائيات اللاعبين
+const playerStats = new Map(); // username -> { wins, losses, points, gamesPlayed, lastGameDate, weeklyPoints, monthlyPoints }
+
+function getOrCreateStats(username) {
+    if (!playerStats.has(username)) {
+        playerStats.set(username, {
+            username,
+            wins: 0,
+            losses: 0,
+            points: 0,
+            gamesPlayed: 0,
+            lastGameDate: Date.now(),
+            weeklyPoints: 0,
+            monthlyPoints: 0
+        });
+    }
+    return playerStats.get(username);
+}
+
+function getLeaderboard() {
+    const now = Date.now();
+    const oneWeekAgo = now - 7 * 24 * 60 * 60 * 1000;
+    const oneMonthAgo = now - 30 * 24 * 60 * 60 * 1000;
+
+    let allStats = Array.from(playerStats.values());
+
+    // أفضل لاعب أسبوعياً
+    const topWeekly = allStats
+        .filter(s => s.lastGameDate >= oneWeekAgo)
+        .sort((a, b) => (b.weeklyPoints || 0) - (a.weeklyPoints || 0))[0];
+
+    // أفضل لاعب شهرياً
+    const topMonthly = allStats
+        .filter(s => s.lastGameDate >= oneMonthAgo)
+        .sort((a, b) => (b.monthlyPoints || 0) - (a.monthlyPoints || 0))[0];
+
+    // أكثر اللاعبين فوزاً
+    const topWinner = allStats
+        .sort((a, b) => b.wins - a.wins)[0];
+
+    return {
+        weekly: topWeekly || { username: "—", weeklyPoints: 0 },
+        monthly: topMonthly || { username: "—", monthlyPoints: 0 },
+        winner: topWinner || { username: "—", wins: 0 }
+    };
+}
 
 function createRoomId() {
-    return "room-" + Date.now() + "-" + Math.floor(Math.random() * 900 + 100);
+    return "ROOM-" + Date.now() + "-" + Math.floor(Math.random() * 900 + 100);
 }
 
 function normalizeRoomId(roomId) {
@@ -24,6 +72,7 @@ function getRoom(roomId) {
     if (!rooms.has(roomId)) {
         rooms.set(roomId, {
             players: [],
+            hostId: null,
             gameState: null,
             currentPlayer: 0,
             pendingCapture: null,
@@ -48,7 +97,7 @@ function emitRoomState(roomId, room) {
     io.to(roomId).emit("roomJoined", {
         roomId,
         players: room.players,
-        playersCount: room.players.length
+        playersCount: room.players.filter(Boolean).length
     });
 }
 
@@ -62,6 +111,9 @@ io.on("connection", (socket) => {
     socket.on("syncGame", (data) => {
         const roomId = normalizeRoomId(data.roomId);
         const room = getRoom(roomId);
+        for (let i = 0; i < 4; i++) {
+            if (room.players[i] === undefined) room.players[i] = null;
+        }
         if (!room) return;
 
         room.gameState = data.gameState;
@@ -91,7 +143,10 @@ io.on("connection", (socket) => {
         const username = data?.username || `لاعب-${socket.id.slice(0, 4)}`;
         const avatar = data?.avatar || "images/default-avatar.png";
 
+        console.log(`📍 createRoom: trying to create/access room ${roomId}`);
+
         const room = getRoom(roomId);
+        console.log(`📊 Room players before: ${room.players.length}`);
 
         if (room.players.length === 0) {
             room.players.push({
@@ -100,6 +155,8 @@ io.on("connection", (socket) => {
                 avatar,
                 disconnected: false
             });
+            room.hostId = socket.id;
+            console.log(`✅ First player added`);
         } else {
             const oldPlayer = findPlayerByName(room, username);
 
@@ -107,19 +164,21 @@ io.on("connection", (socket) => {
                 oldPlayer.id = socket.id;
                 oldPlayer.avatar = avatar;
                 oldPlayer.disconnected = false;
+                console.log(`✏️ Updated existing player: ${username}`);
             }
         }
 
         await socket.join(roomId);
 
         const playerIndex = room.players.findIndex((player) => player.id === socket.id);
+        console.log(`🎮 createRoom: playerIndex = ${playerIndex} (total players: ${room.players.length})`);
 
         io.to(socket.id).emit("roomCreated", {
             roomId,
             playerIndex,
             players: room.players,
             playersCount: room.players.length,
-            isHost: playerIndex === 0
+            isHost: room.hostId === socket.id
         });
 
         if (room.gameState) {
@@ -142,49 +201,124 @@ io.on("connection", (socket) => {
         const username = data?.username || `لاعب-${socket.id.slice(0, 4)}`;
         const avatar = data?.avatar || "images/default-avatar.png";
 
-        if (!roomId || !rooms.has(roomId)) {
+        if (!roomId) {
             io.to(socket.id).emit("joinError", {
-                message: "رمز الغرفة غير صحيح أو غير موجود"
+                message: "رمز الغرفة غير صحيح"
             });
             return;
         }
 
-        const room = rooms.get(roomId);
+        // الحصول على الغرفة أو إنشاء واحدة جديدة
+        const room = getRoom(roomId);
+        
+        if (!room) {
+            io.to(socket.id).emit("joinError", {
+                message: "لا يمكن الوصول إلى الغرفة"
+            });
+            return;
+        }
 
         let playerIndex = -1;
-        const oldPlayer = findPlayerByName(room, username);
+        
+        // ابحث عن لاعب موجود بـ socket.id (إعادة اتصال)
+        const existingPlayerIndex = room.players.findIndex(p => p?.id === socket.id);
 
-        if (oldPlayer) {
-            oldPlayer.id = socket.id;
-            oldPlayer.avatar = avatar;
-            oldPlayer.disconnected = false;
-            playerIndex = room.players.findIndex((player) => player.username === username && !player.isBot);
+        if (existingPlayerIndex !== -1) {
+            // نفس اللاعب يعاد الاتصال - تحديث البيانات فقط
+            room.players[existingPlayerIndex].disconnected = false;
+            room.players[existingPlayerIndex].username = username;
+            room.players[existingPlayerIndex].avatar = avatar;
+            playerIndex = existingPlayerIndex;
+            console.log(`♻️ Player ${username} reconnected to room ${roomId}, index: ${playerIndex}`);
         } else {
-            if (room.players.length >= 4) {
+            // نفس الحساب (نفس الاسم) يدخل من جديد: لا تنشئ مقعداً جديداً
+            const sameNameIndex = room.players.findIndex(p =>
+                p && !p.isBot && p.username === username
+            );
+
+            if (sameNameIndex !== -1) {
+                const oldSocketId = room.players[sameNameIndex].id;
+                room.players[sameNameIndex] = {
+                    ...room.players[sameNameIndex],
+                    id: socket.id,
+                    username,
+                    avatar,
+                    disconnected: false
+                };
+                playerIndex = sameNameIndex;
+
+                if (room.hostId === oldSocketId) {
+                    room.hostId = socket.id;
+                }
+
+                if (oldSocketId && oldSocketId !== socket.id) {
+                    const oldSocket = io.sockets.sockets.get(oldSocketId);
+                    oldSocket?.leave(roomId);
+                }
+
+                console.log(`♻️ Player ${username} resumed seat ${playerIndex} in room ${roomId}`);
+            } else {
+            // لاعب جديد تماماً
+            // التحقق من وجود بوت يمكن استبداله
+            const botIndex = room.players.findIndex(p => p?.isBot);
+            const occupiedCount = room.players.filter(Boolean).length;
+            
+            if (botIndex !== -1) {
+                // استبدال البوت باللاعب الحقيقي
+                room.players[botIndex] = {
+                    id: socket.id,
+                    username,
+                    avatar,
+                    disconnected: false
+                };
+                playerIndex = botIndex;
+                console.log(`🤖➡️👤 Player ${username} replaced bot at index ${playerIndex} in room ${roomId}`);
+            } else if (occupiedCount >= 4) {
+                // الغرفة ممتلئة ولا توجد بوتات
                 io.to(socket.id).emit("joinError", {
                     message: "الغرفة ممتلئة"
                 });
                 return;
+            } else {
+                // إضافة لاعب جديد
+                const emptySeatIndex = [0, 1, 2, 3].find(index => !room.players[index]);
+                const newPlayer = {
+                    id: socket.id,
+                    username,
+                    avatar,
+                    disconnected: false
+                };
+
+                if (emptySeatIndex !== undefined) {
+                    room.players[emptySeatIndex] = newPlayer;
+                    playerIndex = emptySeatIndex;
+                } else {
+                    room.players.push(newPlayer);
+                    playerIndex = room.players.length - 1;
+                }
+
+                if (!room.hostId) room.hostId = socket.id;
+                console.log(`🆕 Player ${username} joined room ${roomId}, index: ${playerIndex}`);
             }
-
-            room.players.push({
-                id: socket.id,
-                username,
-                avatar,
-                disconnected: false
-            });
-
-            playerIndex = room.players.length - 1;
+            }
         }
 
         await socket.join(roomId);
 
-        io.to(roomId).emit("roomJoined", {
+        // إرسال roomJoined إلى اللاعب الجديد فقط مع index صحيح
+        io.to(socket.id).emit("roomJoined", {
             roomId,
             playerIndex,
             players: room.players,
-            playersCount: room.players.length,
-            isHost: playerIndex === 0
+            playersCount: room.players.filter(Boolean).length,
+            isHost: room.hostId === socket.id
+        });
+
+        // إبلاغ جميع اللاعبين في الغرفة بقائمة اللاعبين المحدثة (بما فيهم البوتات المستبدلة)
+        socket.broadcast.to(roomId).emit("playerJoined", {
+            roomId,
+            players: room.players,
+            playersCount: room.players.filter(Boolean).length
         });
 
         if (room.gameState) {
@@ -202,7 +336,67 @@ io.on("connection", (socket) => {
         }
     });
 
-    socket.on("quickPlay", (data) => {
+        socket.on("selectSeat", (data) => {
+            const roomId = normalizeRoomId(data.roomId);
+            const seatIndex = data.seatIndex;
+
+            const room = rooms.get(roomId);
+            if (!room) {
+                socket.emit("joinError", { message: "الغرفة غير موجودة" });
+                return;
+            }
+
+            for (let i = 0; i < 4; i++) {
+                if (room.players[i] === undefined) room.players[i] = null;
+            }
+
+            // البحث عن اللاعب الحالي
+            const playerIndex = room.players.findIndex(p => p?.id === socket.id);
+            if (playerIndex === -1) {
+                socket.emit("joinError", { message: "أنت لست في هذه الغرفة" });
+                return;
+            }
+
+            // التحقق من أن المقعد المختار فارغ
+            // التحقق من أن المقعد المختار فارغ وأنه ليس نفس المقعد
+            if (seatIndex === playerIndex) {
+                return; // نفس المقعد
+            }
+            if (room.players[seatIndex]) {
+                socket.emit("gameMessage", "هذا المقعد مأهول بالفعل");
+                return;
+            }
+
+            // نقل اللاعب إلى المقعد الجديد
+            // نقل اللاعب إلى المقعد الجديد باستخدام null للمقاعد الفارغة
+            const player = room.players[playerIndex];
+            room.players[playerIndex] = null;
+            room.players[seatIndex] = player;
+        
+            console.log(`✔️ Player ${player.username} moved to seat ${seatIndex + 1} in room ${roomId}`);
+            console.log("📋 Updated players array:", room.players.map((p, i) => `${i}: ${p?.username || 'empty'}`).join(', '));
+
+            // حساب عدد اللاعبين الفعليين
+            const playersCount = room.players.filter(Boolean).length;
+
+            // إرسال تحديث roomJoined للاعب المتحرك
+            io.to(socket.id).emit("roomJoined", {
+                roomId,
+                playerIndex: seatIndex,
+                players: room.players,
+                playersCount: playersCount,
+                isHost: room.hostId === socket.id
+            });
+
+            // إبلاغ جميع اللاعبين الآخرين بالتحديث
+            socket.broadcast.to(roomId).emit("playerJoined", {
+                roomId,
+                players: room.players,
+                playersCount: playersCount
+            });
+        });
+
+    socket.on("findMatch", (data) => {
         const username = data?.username || `لاعب-${socket.id.slice(0, 4)}`;
         const avatar = data?.avatar || "images/default-avatar.png";
 
@@ -254,16 +448,52 @@ io.on("connection", (socket) => {
 
     socket.on("startManualRoom", (data) => {
         const roomId = normalizeRoomId(data.roomId);
-        console.log("وصل طلب بدء المباراة:", roomId);
+        console.log("وصل طلب بدء المباراة:", roomId, "computersToAdd:", data.computersToAdd);
 
         const room = rooms.get(roomId);
 
-        if (!room) return;
-        if (room.players[0]?.id !== socket.id) return;
+        if (!room) {
+            console.log("❌ الغرفة غير موجودة");
+            return;
+        }
+        
+        for (let i = 0; i < 4; i++) {
+            if (room.players[i] === undefined) room.players[i] = null;
+        }
+
+        console.log("✅ الغرفة موجودة، عدد اللاعبين:", room.players.filter(Boolean).length);
+        console.log("🎯 الهوست الحالي:", room.players[0]?.id, "الاتصال الحالي:", socket.id);
+        
+        if ((room.hostId || room.players[0]?.id) !== socket.id) {
+            console.log("❌ ليس الهوست");
+            return;
+        }
 
         room.decks = data.decks || 5;
 
-        if (room.players.length < 4) {
+        // إضافة كمبيوتر تلقائياً للمقاعد الفارغة بناءً على العدد الفعلي
+        const computersToAdd = Math.max(0, 4 - room.players.filter(Boolean).length);
+        console.log(`➕ سيتم إضافة ${computersToAdd} كمبيوتر`);
+        
+        let botsAdded = 0;
+        for (let i = 0; i < 4 && botsAdded < computersToAdd; i++) {
+            if (room.players[i]) continue;
+
+            const botNumber = room.players.filter(p => p?.isBot).length + 1;
+            room.players[i] = {
+                id: `bot-${roomId}-${Date.now()}-${i}`,
+                username: `كمبيوتر ${botNumber}`,
+                avatar: "images/default-avatar.png",
+                isBot: true,
+                disconnected: false
+            };
+            botsAdded += 1;
+        }
+
+        console.log(`✅ تم إضافة الكمبيوتر، عدد اللاعبين الآن: ${room.players.filter(Boolean).length}`);
+
+        if (room.players.filter(Boolean).length < 4) {
+            console.log("❌ عدد اللاعبين أقل من 4");
             socket.emit("gameMessage", "لازم يكتمل عدد اللاعبين 4");
             return;
         }
@@ -273,9 +503,9 @@ io.on("connection", (socket) => {
         io.to(roomId).emit("matchFound", {
             roomId,
             players: room.players,
-            playersCount: room.players.length,
-            botsCount: room.players.filter(p => p.isBot).length,
-            isHost: true,
+            playersCount: room.players.filter(Boolean).length,
+            botsCount: room.players.filter(p => p?.isBot).length,
+            isHost: room.hostId === socket.id,
             decks: room.decks
         });
     });
@@ -287,7 +517,7 @@ io.on("connection", (socket) => {
         console.log("وصل توزيع اللعبة من الهوست:", roomId);
 
         if (!room) return;
-        if (room.players[0]?.id !== socket.id) return;
+        if ((room.hostId || room.players[0]?.id) !== socket.id) return;
 
         room.gameState = data.gameState;
         room.currentPlayer = data.gameState?.currentPlayer || 0;
@@ -307,6 +537,98 @@ io.on("connection", (socket) => {
                 objectionPlayer: room.objectionPlayer
             });
         });
+    });
+
+    socket.on("getPublicRooms", () => {
+        const list = [];
+        for (const [roomId, meta] of publicRooms.entries()) {
+            const room = rooms.get(roomId);
+            if (!room) continue;
+            if (room.gameState) continue; // game already started
+            const humanPlayers = room.players.filter(p => !p.isBot && !p.disconnected).length;
+            if (humanPlayers >= 4) continue; // full
+            list.push({
+                roomId,
+                title: meta.title,
+                location: meta.location,
+                hostName: meta.hostName,
+                createdAt: meta.createdAt,
+                playersCount: humanPlayers,
+                spotsLeft: 4 - humanPlayers
+            });
+        }
+        io.to(socket.id).emit("publicRoomsList", { rooms: list });
+    });
+
+    socket.on("createPublicRoom", async (data) => {
+        try {
+            // لا نحتاج إلى فحص currentUser على الخادم - البيانات تأتي من الـ client
+            const roomId = normalizeRoomId(data?.roomId || createRoomId());
+            const username = data?.username || `لاعب-${socket.id.slice(0, 4)}`;
+            const avatar = data?.avatar || "images/default-avatar.png";
+            const title = String(data?.title || "جلسة عامة").slice(0, 60);
+            const location = String(data?.location || "").slice(0, 60);
+
+            console.log("📢 Creating public room:", { roomId, username, title, location });
+
+            const room = getRoom(roomId);
+
+            if (room.players.length === 0) {
+                room.players.push({ id: socket.id, username, avatar, disconnected: false });
+                room.hostId = socket.id;
+            }
+
+            publicRooms.set(roomId, {
+                title,
+                location,
+                hostName: username,
+                createdAt: Date.now()
+            });
+
+            await socket.join(roomId);
+
+            const playerIndex = room.players.findIndex(p => p?.id === socket.id);
+
+            console.log("✅ Room created successfully:", roomId, "with host:", username);
+            console.log("🎫 Sending roomCreated to socket:", socket.id, "playerIndex:", playerIndex);
+
+            // إرسال roomCreated للمنشئ أولاً
+            io.to(socket.id).emit("roomCreated", {
+                roomId,
+                playerIndex,
+                players: room.players,
+                playersCount: room.players.length,
+                isHost: room.hostId === socket.id,
+                isPublic: true
+            });
+
+            console.log("✅ roomCreated emit sent successfully");
+
+            // تحديث قائمة الجلسات لجميع الـ clients
+            const list = [];
+            for (const [rid, meta] of publicRooms.entries()) {
+                const r = rooms.get(rid);
+                if (!r) continue;
+                if (r.gameState) continue;
+                const humanPlayers = r.players.filter(p => p && !p.isBot && !p.disconnected).length;
+                if (humanPlayers >= 4) continue;
+                list.push({
+                    roomId: rid,
+                    title: meta.title,
+                    location: meta.location,
+                    hostName: meta.hostName,
+                    createdAt: meta.createdAt,
+                    playersCount: humanPlayers,
+                    spotsLeft: 4 - humanPlayers
+                });
+            }
+            
+            io.emit("publicRoomsList", { rooms: list });
+            console.log("📤 Broadcast updated room list to all clients. Total rooms:", list.length);
+        } catch (error) {
+            console.error("❌ Error in createPublicRoom:", error.message, error.stack);
+            io.to(socket.id).emit("gameMessage", "حدث خطأ في إنشاء الجلسة");
+        }
     });
 
     socket.on("addComputer", (roomId) => {
@@ -338,13 +660,102 @@ io.on("connection", (socket) => {
         emitRoomState(roomId, room);
     });
 
+    socket.on("gameEnded", (data) => {
+        try {
+            // data = { winner: username, players: [{ username, score, points }, ...] }
+            if (!data || !data.players) return;
+
+            const now = Date.now();
+
+            data.players.forEach(p => {
+                if (!p.username || p.username === "كمبيوتر" || p.username.includes("كمبيوتر")) {
+                    return; // تجاهل البوتات
+                }
+
+                const stats = getOrCreateStats(p.username);
+                stats.gamesPlayed += 1;
+                stats.points += p.points || 0;
+                stats.monthlyPoints += p.points || 0;
+                stats.weeklyPoints += p.points || 0;
+                stats.lastGameDate = now;
+
+                if (p.username === data.winner) {
+                    stats.wins += 1;
+                } else {
+                    stats.losses += 1;
+                }
+
+                console.log(`📊 Updated stats for ${p.username}:`, stats);
+            });
+
+            io.emit("leaderboardUpdated");
+        } catch (error) {
+            console.error("❌ Error in gameEnded:", error.message);
+        }
+    });
+
+    socket.on("getLeaderboard", () => {
+        const leaderboard = getLeaderboard();
+        console.log("📋 Sending leaderboard:", leaderboard);
+        io.to(socket.id).emit("leaderboardData", leaderboard);
+    });
+
+    socket.on("chatMessage", (data) => {
+        const { roomId, username, message } = data;
+        if (!roomId || !message) return;
+
+        const room = rooms.get(roomId);
+        if (!room) return;
+
+        console.log(`💬 [${roomId}] ${username}: ${message}`);
+
+        // بث الرسالة لجميع اللاعبين في الغرفة (بما فيهم المرسل)
+        io.to(roomId).emit("chatMessage", {
+            username,
+            message,
+            time: Date.now()
+        });
+    });
+
+    socket.on("leaveWaitingRoom", (data) => {
+        const roomId = normalizeRoomId(data?.roomId);
+        const isHost = data?.isHost === true;
+
+        console.log(`👤 Player leaving room ${roomId}, isHost: ${isHost}`);
+
+        const room = rooms.get(roomId);
+        if (!room) return;
+
+        // إذا كان الخارج هوست، احذف الغرفة وأخبر جميع اللاعبين
+        if (isHost) {
+            console.log(`🔴 Host left room ${roomId} - closing room`);
+            
+            // أخبر جميع اللاعبين أن الغرفة أُغلقت
+            io.to(roomId).emit("roomClosed", {
+                message: "غادر منشئ الغرفة - تم إغلاق الغرفة"
+            });
+
+            // احذف الغرفة
+            rooms.delete(roomId);
+            publicRooms.delete(roomId);
+            return;
+        }
+
+        // إذا لم يكن هوست، فقط أزل اللاعب من قائمة الغرفة
+        const playerIndex = room.players.findIndex(p => p?.id === socket.id);
+        if (playerIndex !== -1) {
+            room.players[playerIndex] = null;
+            console.log(`✔️ Player removed from room ${roomId}, remaining: ${room.players.filter(Boolean).length}`);
+        }
+    });
+
     socket.on("disconnect", () => {
         console.log("لاعب خرج:", socket.id);
 
         waitingPlayers = waitingPlayers.filter((player) => player.id !== socket.id);
 
         for (const [roomId, room] of rooms.entries()) {
-            const player = room.players.find((p) => p.id === socket.id);
+            const player = room.players.find((p) => p?.id === socket.id);
 
             if (!player) continue;
 
@@ -362,14 +773,22 @@ io.on("connection", (socket) => {
             });
 
             setTimeout(() => {
-                const samePlayer = room.players.find((p) => p.id === socket.id);
+                const samePlayer = room.players.find((p) => p?.id === socket.id);
 
                 if (!samePlayer || !samePlayer.disconnected) return;
 
-                room.players = room.players.filter((p) => p.id !== socket.id);
+                    const removedIndex = room.players.findIndex((p) => p?.id === socket.id);
+                    if (removedIndex !== -1) {
+                        room.players[removedIndex] = null;
+                    }
 
-                if (room.players.length === 0) {
+                    if (room.hostId === socket.id) {
+                        room.hostId = room.players.find((p) => p)?.id || null;
+                    }
+
+                    if (room.players.filter(Boolean).length === 0) {
                     rooms.delete(roomId);
+                    publicRooms.delete(roomId);
                     return;
                 }
 
@@ -388,8 +807,40 @@ io.on("connection", (socket) => {
     });
 });
 
-const PORT = process.env.PORT || 3000;
+// معالج الأخطاء العام
+process.on("uncaughtException", (error) => {
+    console.error("❌ UNCAUGHT EXCEPTION:", error.message);
+    console.error(error.stack);
+});
 
-server.listen(PORT, () => {
-    console.log(`الخادم يعمل على http://localhost:${PORT}`);
+process.on("unhandledRejection", (reason, promise) => {
+    console.error("❌ UNHANDLED REJECTION:", reason);
+});
+
+const initialPort = Number(process.env.PORT) || 3000;
+const maxPortRetries = process.env.PORT ? 0 : 10;
+let currentPort = initialPort;
+let retriedPorts = 0;
+
+server.on("error", (error) => {
+    if (error && error.code === "EADDRINUSE" && retriedPorts < maxPortRetries) {
+        const busyPort = currentPort;
+        retriedPorts += 1;
+        currentPort = busyPort + 1;
+        console.warn(`⚠️ المنفذ ${busyPort} مستخدم، سيتم المحاولة على ${currentPort}...`);
+        setTimeout(() => server.listen(currentPort), 150);
+        return;
+    }
+
+    if (error && error.code === "EADDRINUSE") {
+        console.error(`⚠️ تعذر تشغيل الخادم. جرب تحديد PORT يدويًا بدل ${currentPort}.`);
+        process.exit(1);
+    }
+
+    console.error("❌ SERVER ERROR:", error);
+    process.exit(1);
+});
+
+server.listen(currentPort, () => {
+    console.log(`الخادم يعمل على http://localhost:${currentPort}`);
 });

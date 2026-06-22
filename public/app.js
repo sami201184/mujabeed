@@ -20,6 +20,72 @@ let isRoomHost = false;
 let botThinking = false;
 let selectedDecks = 1;
 let roundEnded = false;
+let chatMessages = [];
+
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+}
+
+function sendChatMessage() {
+    const input = document.getElementById("chat-input");
+    if (!input) {
+        console.warn("⚠️ chat-input element not found");
+        return;
+    }
+    const text = input.value.trim().slice(0, 200);
+    if (!text) return;
+    input.value = "";
+    if (!onlineRoomId) {
+        console.warn("⚠️ Not in online room");
+        return;
+    }
+    const username = currentUser?.name || "لاعب";
+    console.log("📤 Sending chat message:", text);
+    
+    // الخادم سيبث الرسالة لجميع اللاعبين (لا نضيفها هنا لتجنب التكرار)
+    socket.emit("chatMessage", {
+        roomId: onlineRoomId,
+        username: username,
+        message: text
+    });
+}
+
+function appendChatMessage(msg, skipSave = false) {
+    if (!msg || !msg.message) {
+        console.warn("⚠️ Invalid message:", msg);
+        return;
+    }
+    
+    if (!skipSave) {
+        chatMessages.push(msg);
+    }
+    
+    const box = document.getElementById("chat-messages");
+    if (!box) {
+        console.warn("⚠️ chat-messages element not found. Trying after small delay...");
+        setTimeout(() => appendChatMessage(msg, true), 100);
+        return;
+    }
+    
+    const isMe = msg.username === (currentUser?.name || "");
+    const time = msg.time ? new Date(msg.time).toLocaleTimeString("ar", { hour: "2-digit", minute: "2-digit" }) : "";
+    
+    const div = document.createElement("div");
+    div.className = "chat-msg" + (isMe ? " chat-msg-me" : "");
+    div.innerHTML = `
+        <span class="chat-msg-name">${escapeHtml(msg.username)}</span>
+        <span class="chat-msg-text">${escapeHtml(msg.message)}</span>
+        ${time ? `<span class="chat-msg-time">${time}</span>` : ""}
+    `;
+    
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+    console.log("💬 Chat message added:", msg.username, "-", msg.message);
+}
 
 function saveLastRoom() {
     if (!onlineRoomId) return;
@@ -381,6 +447,33 @@ function showMainMenu() {
                     <button class="hero-play-btn" onclick="quickPlayOnline()">ابدأ اللعب</button>
                 </section>
 
+                <section class="leaderboard-section">
+                    <h3 style="margin:0 0 12px; font-size:0.95rem; opacity:0.8; letter-spacing:0.3px;">🏆 لوحة المتصدرين</h3>
+                    
+                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:16px;">
+                        <!-- أفضل لاعب أسبوعياً -->
+                        <div class="leaderboard-card">
+                            <div style="font-size:0.8rem; opacity:0.7; margin-bottom:8px;">📅 هذا الأسبوع</div>
+                            <div style="font-weight:800; font-size:1.1rem; margin-bottom:4px;" id="weekly-name">—</div>
+                            <div style="font-size:0.9rem; opacity:0.8;" id="weekly-points">0 نقطة</div>
+                        </div>
+                        
+                        <!-- أفضل لاعب شهرياً -->
+                        <div class="leaderboard-card">
+                            <div style="font-size:0.8rem; opacity:0.7; margin-bottom:8px;">📆 هذا الشهر</div>
+                            <div style="font-weight:800; font-size:1.1rem; margin-bottom:4px;" id="monthly-name">—</div>
+                            <div style="font-size:0.9rem; opacity:0.8;" id="monthly-points">0 نقطة</div>
+                        </div>
+                        
+                        <!-- أكثر اللاعبين فوزاً -->
+                        <div class="leaderboard-card">
+                            <div style="font-size:0.8rem; opacity:0.7; margin-bottom:8px;">🎯 الأكثر فوزاً</div>
+                            <div style="font-weight:800; font-size:1.1rem; margin-bottom:4px;" id="winner-name">—</div>
+                            <div style="font-size:0.9rem; opacity:0.8;" id="winner-wins">0 انتصار</div>
+                        </div>
+                    </div>
+                </section>
+
                 <section class="menu-grid">
                     <button class="menu-card" onclick="createRoom()">
                         <span class="menu-card-icon">إنشاء</span>
@@ -410,6 +503,9 @@ function showMainMenu() {
             </div>
         </div>
     `;
+
+    // طلب بيانات لوحة المتصدرين من الخادم
+    socket.emit("getLeaderboard");
 }
 
 
@@ -446,15 +542,41 @@ function logoutUser() {
 
 function showJoinByCode() {
     document.body.innerHTML = `
-        <h1>مجابيد</h1>
-        <div class="room-card">
-            <h2>الانضمام برمز الغرفة</h2>
-            <input id="joinCodeInput" type="text" placeholder="أدخل رمز الغرفة" maxlength="20">
-            <button onclick="joinRoomByCode()">انضمام</button>
-            <button onclick="showMainMenu()">رجوع</button>
-            <p id="joinCodeError" class="login-error"></p>
+        <div class="join-code-screen">
+            <div class="join-code-card">
+                <p class="join-code-badge">الدخول السريع</p>
+                <h2>الانضمام برمز الغرفة</h2>
+                <p class="join-code-subtitle">اكتب الرمز كما وصلك من صاحب الغرفة</p>
+
+                <div class="join-code-form">
+                    <label class="join-code-label" for="joinCodeInput">رمز الغرفة</label>
+                    <input id="joinCodeInput" class="join-code-input" type="text" placeholder="مثال: A7K2M" maxlength="20" autocomplete="off" spellcheck="false">
+                    <p class="join-code-hint">سيتم تحويل الحروف تلقائياً إلى أحرف كبيرة</p>
+                </div>
+
+                <div class="join-code-actions">
+                    <button class="join-primary-btn" onclick="joinRoomByCode()">انضمام الآن</button>
+                    <button class="secondary-btn join-secondary-btn" onclick="showMainMenu()">رجوع للقائمة</button>
+                </div>
+
+                <p id="joinCodeError" class="login-error join-code-error"></p>
+            </div>
         </div>
     `;
+
+    const input = document.getElementById("joinCodeInput");
+    if (input) {
+        input.focus();
+        input.addEventListener("input", () => {
+            input.value = input.value.toUpperCase();
+        });
+        input.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                joinRoomByCode();
+            }
+        });
+    }
 }
 
 function joinRoomByCode() {
@@ -498,21 +620,43 @@ function joinRoomByCode() {
 
 
 
+function leaveWaitingRoom() {
+    if (onlineRoomId) {
+        socket.emit("leaveWaitingRoom", {
+            roomId: onlineRoomId,
+            isHost: isRoomHost
+        });
+    }
+    clearLastRoom();
+    onlineRoomId = null;
+    onlineRoomPlayers = [];
+    myOnlineIndex = 0;
+    isRoomHost = false;
+    showMainMenu();
+}
+
 function showLobby(code, players = onlineRoomPlayers, hostFlag = isRoomHost) {
     const normalizedRoomCode = String(code || onlineRoomId || "").toUpperCase();
     const members = Array.isArray(players) ? players : [];
+    const realPlayersCount = members.filter(player => player !== null).length;
 
     const isHost = hostFlag === true || members[0]?.id === socket.id;
 
     const seatsHtml = [0, 1, 2, 3].map(i => {
         const player = members[i];
         const isMe = myOnlineIndex === i;
+        
+        // تحديد الفريق: 1 و 3 للفريق الأول، 2 و 4 للفريق الثاني
+        const team = (i === 0 || i === 2) ? "فريق-1" : "فريق-2";
+        const teamLabel = (i === 0 || i === 2) ? "الفريق الأول" : "الفريق الثاني";
 
         if (!player) {
+            // مقعد فارغ - يمكن الضغط عليه لاختيار المقعد
             return `
-                <div class="seat-item empty-seat">
+                <div class="seat-item empty-seat ${team}">
                     <span class="seat-number">${i + 1}</span>
-                    <span>انتظار...</span>
+                    <span class="seat-team">${teamLabel}</span>
+                    <button class="seat-select-btn" onclick="selectSeat(${i})" title="اختر هذا المقعد">اختر</button>
                 </div>
             `;
         }
@@ -521,8 +665,9 @@ function showLobby(code, players = onlineRoomPlayers, hostFlag = isRoomHost) {
         const meTag = isMe ? "<span class='seat-tag'>أنت</span>" : "";
 
         return `
-            <div class="seat-item ${isMe ? 'my-seat' : ''}">
+            <div class="seat-item occupied-seat ${team} ${isMe ? 'my-seat' : ''}">
                 <span class="seat-number">${i + 1}</span>
+                <span class="seat-team">${teamLabel}</span>
                 <div>
                     <strong>${player.username}</strong>
                     <small>${type}${meTag}</small>
@@ -532,20 +677,20 @@ function showLobby(code, players = onlineRoomPlayers, hostFlag = isRoomHost) {
     }).join("");
 
     document.body.innerHTML = `
-        <div class="waiting-room-screen">
+        <div id="waitingRoom" class="waiting-room-screen">
             <div class="waiting-room-card">
                 <div class="waiting-room-header">
                     <div>
                         <p class="menu-badge">غرفة الانتظار</p>
                         <h1>${normalizedRoomCode}</h1>
                     </div>
-                    <button class="menu-icon-btn" onclick="showMainMenu()" aria-label="رجوع">رجوع</button>
+                    <button class="menu-icon-btn" onclick="leaveWaitingRoom()" aria-label="خروج">خروج</button>
                 </div>
 
                 <div class="waiting-room-body">
                     <div class="waiting-room-info">
                         <span>عدد اللاعبين</span>
-                        <strong>${members.length}/4</strong>
+                        <strong>${realPlayersCount}/4</strong>
                     </div>
 
                     <div class="waiting-room-seats">
@@ -572,11 +717,6 @@ function showLobby(code, players = onlineRoomPlayers, hostFlag = isRoomHost) {
                     `}
 
                     <div class="waiting-room-actions">
-                        ${isHost 
-                          ? `<button class="hero-play-btn" ${members.length >= 4 ? "disabled" : ""} onclick="addComputerToRoom()">إضافة كمبيوتر</button>` 
-                          : ""
-                        }
-
                         ${isHost
                           ? `<button class="hero-play-btn" onclick="startManualGame()">بدء المباراة</button>`
                           : `<button class="hero-play-btn" disabled>انتظار بدء اللعبة</button>`}
@@ -588,14 +728,27 @@ function showLobby(code, players = onlineRoomPlayers, hostFlag = isRoomHost) {
 }
 
 function startManualGame() {
-    console.log("بدء المباراة", onlineRoomId, selectedDecks);
+    console.log("بدء المباراة، الغرفة:", onlineRoomId, "عدد اللاعبين:", onlineRoomPlayers.length);
+
+    if (!onlineRoomId) {
+        console.error("❌ الغرفة فارغة!");
+        showMessage("خطأ: الغرفة غير محددة");
+        return;
+    }
+
+    // إضافة كمبيوتر تلقائياً للمقاعد الفارغة
+    const currentPlayers = onlineRoomPlayers.length || 1;
+    const computersToAdd = Math.max(0, 4 - currentPlayers);
+    
+    console.log(`سيتم إضافة ${computersToAdd} كمبيوتر تلقائياً`);
 
     socket.emit("startManualRoom", {
         roomId: onlineRoomId,
-        decks: selectedDecks
+        decks: selectedDecks,
+        computersToAdd: computersToAdd
     });
 
-    console.log("تم الإرسال");
+    console.log("✅ تم إرسال الحدث startManualRoom");
 }
 function addComputerToRoom() {
     console.log("ضغط إضافة كمبيوتر", onlineRoomId);
@@ -609,6 +762,20 @@ function addComputerToRoom() {
 }
 function addComputer() {
     socket.emit("addComputer", currentRoomId);
+}
+
+function selectSeat(seatIndex) {
+    console.log(`محاولة اختيار المقعد ${seatIndex + 1}`);
+    
+    if (!onlineRoomId) {
+        showMessage("لا توجد غرفة محددة");
+        return;
+    }
+    
+    socket.emit("selectSeat", {
+        roomId: onlineRoomId,
+        seatIndex: seatIndex
+    });
 }
 
 
@@ -922,23 +1089,24 @@ function renderGame() {
 
     document.body.innerHTML = `
         <div id="game-container">
+        <button class="mobile-panel-toggle" onclick="toggleMobilePanel()" aria-label="القائمة">☰</button>
+        <div class="mobile-panel-overlay" id="mobile-panel-overlay" onclick="toggleMobilePanel()"></div>
         <div class="left-panel">
             <div class="player-profile-card">
                 <div class="player-profile-top">
-                    <img class="profile-avatar" src="images/default-avatar.png">
                     <div>
-                        <p class="profile-label">الحساب</p>
-                        <h3>${myName}</h3>
+                        <p class="profile-label">الغرفة</p>
+                        <h3>${onlineRoomId || "فردية"}</h3>
                     </div>
                 </div>
                 <div class="stats-grid">
                     <div class="stat-pill">
-                        <span>لعب</span>
-                        <strong>${stats.gamesPlayed}</strong>
+                        <span>اللاعبون</span>
+                        <strong>${onlineRoomPlayers.filter(p => !p.isBot).length || 1}/4</strong>
                     </div>
                     <div class="stat-pill">
-                        <span>اعتراض</span>
-                        <strong>${stats.objections}</strong>
+                        <span>موقعك</span>
+                        <strong>#${myOnlineIndex + 1}</strong>
                     </div>
                 </div>
             </div>
@@ -957,10 +1125,26 @@ function renderGame() {
                         <th>الخصوم</th>
                     </tr>
                     <tr>
-                        <td>${calculateTeamPoints([0, 2])}</td>
-                        <td>${calculateTeamPoints([1, 3])}</td>
+                        <td>${getMyTeamPoints()}</td>
+                        <td>${getEnemyTeamPoints()}</td>
                     </tr>
                 </table>
+            </div>
+
+            <div class="chat-section">
+                <div class="chat-header">💬 الدردشة</div>
+                <div class="chat-messages" id="chat-messages"></div>
+                <div class="chat-input-row">
+                    <input
+                        id="chat-input"
+                        type="text"
+                        placeholder="اكتب رسالة..."
+                        maxlength="200"
+                        onkeydown="if(event.key==='Enter') sendChatMessage()"
+                        autocomplete="off"
+                    >
+                    <button onclick="sendChatMessage()" class="chat-send-btn">إرسال</button>
+                </div>
             </div>
         </div>
 
@@ -1074,6 +1258,9 @@ function renderGame() {
 
     curveCards();
     enableDragSelect();
+
+    // Restore previous chat messages after re-render
+    chatMessages.forEach(msg => appendChatMessage(msg, true));
 
     setTimeout(() => {
         if (
@@ -1424,7 +1611,7 @@ function getTopStackHtml(playerIndex) {
 
     const stack = gameState.players[playerIndex].stack;
 
-    if (stack.length === 0) return "؟";
+    if (stack.length === 0) return "";
 
     let visibleCard = stack[stack.length - 1];
 
@@ -1780,6 +1967,34 @@ function calculateTeamPoints(teamPlayers) {
     return total;
 }
 
+function getMyTeamPoints() {
+    const localPlayerIndex = onlineRoomId ? myOnlineIndex : 0;
+    
+    // تحديد فريقك بناءً على موقعك
+    let myTeamIndices;
+    if (localPlayerIndex === 0 || localPlayerIndex === 2) {
+        myTeamIndices = [0, 2];
+    } else {
+        myTeamIndices = [1, 3];
+    }
+    
+    return calculateTeamPoints(myTeamIndices);
+}
+
+function getEnemyTeamPoints() {
+    const localPlayerIndex = onlineRoomId ? myOnlineIndex : 0;
+    
+    // تحديد فريق الخصوم بناءً على موقعك
+    let enemyTeamIndices;
+    if (localPlayerIndex === 0 || localPlayerIndex === 2) {
+        enemyTeamIndices = [1, 3];
+    } else {
+        enemyTeamIndices = [0, 2];
+    }
+    
+    return calculateTeamPoints(enemyTeamIndices);
+}
+
 function endRound() {
     if (roundEnded) return;
     playSound("win");
@@ -1809,6 +2024,24 @@ function endRound() {
         resultIcon = "🤝";
     }
 
+    // إرسال النتائج للخادم
+    const winner = myPoints > enemyPoints ? "فريقك" : (enemyPoints > myPoints ? "الخصوم" : "");
+    const playersResults = game.players.map(p => ({
+        username: p.username,
+        points: p.team === 0 || p.team === 2 ? myPoints : enemyPoints,
+        isWinner: winner === "فريقك" && (p.team === 0 || p.team === 2) || 
+                  winner === "الخصوم" && (p.team === 1 || p.team === 3)
+    }));
+
+    // إرسال نتائج اللاعبين الحقيقيين فقط
+    const realPlayers = playersResults.filter(p => !p.username.includes("كمبيوتر"));
+    if (realPlayers.length > 0) {
+        socket.emit("gameEnded", {
+            winner: realPlayers.find(p => p.isWinner)?.username,
+            players: realPlayers
+        });
+    }
+
     document.body.innerHTML = `
         <div class="result-screen">
             <div class="result-card ${resultClass}">
@@ -1836,31 +2069,196 @@ function endRound() {
     `;
 }
 function showRealPlayers() {
+    if (!currentUser) {
+        showLoginPage();
+        return;
+    }
+
     document.body.innerHTML = `
-        <h1>👥 لاعبون للعب الحقيقي</h1>
+        <div class="main-menu-screen">
+            <div class="main-menu-shell">
+                <header class="main-menu-header">
+                    <div>
+                        <p class="menu-badge">مجابيد</p>
+                        <h2>لاعبون حقيقيون</h2>
+                    </div>
+                    <button class="menu-icon-btn" onclick="showMainMenu()">رجوع</button>
+                </header>
 
-        <div class="room-card">
-            <h2>جلسات قريبة</h2>
+                <section class="menu-grid" style="grid-template-columns:1fr;">
+                    <button class="hero-play-btn" onclick="showCreateSession()" style="margin-bottom:8px;">
+                        ➕ إنشاء جلسة جديدة
+                    </button>
+                </section>
 
-            <div class="player-session">
-                <h3>جدة - الليلة 9:00</h3>
-                <p>يحتاجون لاعبين: 2</p>
-                <p>منظم الجلسة: سامي ⭐ 4.8</p>
-                <button>طلب انضمام</button>
+                <section>
+                    <h3 style="margin:16px 0 8px;font-size:1rem;opacity:.7;">الجلسات المتاحة</h3>
+                    <div id="public-rooms-list">
+                        <p style="opacity:.5;text-align:center;padding:24px;">جارٍ البحث...</p>
+                    </div>
+                </section>
             </div>
+        </div>
+    `;
 
-            <div class="player-session">
-                <h3>مكة - بعد المغرب</h3>
-                <p>يحتاجون لاعب: 1</p>
-                <p>منظم الجلسة: محمد ⭐ 4.6</p>
-                <button>طلب انضمام</button>
+    socket.emit("getPublicRooms");
+}
+
+function showCreateSession() {
+    if (!currentUser) {
+        showLoginPage();
+        return;
+    }
+
+    document.body.innerHTML = `
+        <div class="main-menu-screen">
+            <div class="main-menu-shell">
+                <header class="main-menu-header">
+                    <div>
+                        <p class="menu-badge">مجابيد</p>
+                        <h2>إنشاء جلسة</h2>
+                    </div>
+                    <button class="menu-icon-btn" onclick="showRealPlayers()">رجوع</button>
+                </header>
+
+                <div class="room-card" style="margin-top:16px;">
+                    <form onsubmit="event.preventDefault(); submitCreateSession();">
+                        <div style="margin-bottom:12px;">
+                            <label style="display:block;margin-bottom:4px;font-size:.9rem;">عنوان الجلسة</label>
+                            <input id="sessionTitle" type="text" placeholder="مثال: جلسة ليلية مكة" maxlength="60"
+                                style="width:100%;padding:10px;border-radius:8px;border:1px solid #444;background:#1e2230;color:#fff;box-sizing:border-box;">
+                        </div>
+                        <div style="margin-bottom:12px;">
+                            <label style="display:block;margin-bottom:4px;font-size:.9rem;">الموقع (اختياري)</label>
+                            <input id="sessionLocation" type="text" placeholder="مثال: جدة - حي الروضة" maxlength="60"
+                                style="width:100%;padding:10px;border-radius:8px;border:1px solid #444;background:#1e2230;color:#fff;box-sizing:border-box;">
+                        </div>
+                        <button type="submit" class="hero-play-btn" style="width:100%;margin-top:8px;">
+                            إنشاء الجلسة
+                        </button>
+                    </form>
+                    <p id="createSessionError" style="color:#e05;margin-top:8px;display:none;"></p>
+                </div>
             </div>
-
-            <button onclick="showCreateSession()">➕ إنشاء جلسة</button>
-            <button onclick="location.reload()">رجوع</button>
         </div>
     `;
 }
+
+function submitCreateSession() {
+    console.log("🔥 submitCreateSession called");
+    
+    const title = document.getElementById("sessionTitle")?.value.trim();
+    const location = document.getElementById("sessionLocation")?.value.trim();
+    const errorEl = document.getElementById("createSessionError");
+    const submitBtn = document.querySelector("button[type='submit']");
+
+    console.log("📝 Title:", title, "Location:", location, "currentUser:", currentUser);
+
+    if (!title) {
+        console.warn("⚠️ No title provided");
+        if (errorEl) { errorEl.textContent = "أدخل عنوان الجلسة"; errorEl.style.display = "block"; }
+        return;
+    }
+
+    if (!currentUser) {
+        console.warn("⚠️ Not logged in");
+        if (errorEl) { errorEl.textContent = "يجب تسجيل الدخول أولاً"; errorEl.style.display = "block"; }
+        return;
+    }
+
+    // تعطيل الزر أثناء الإرسال
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = "جارٍ الإنشاء...";
+    }
+
+    const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let code = "";
+    for (let i = 0; i < 5; i++) {
+        code += letters[Math.floor(Math.random() * letters.length)];
+    }
+
+    console.log("📤 Emitting createPublicRoom with roomId:", code);
+
+    socket.emit("createPublicRoom", {
+        roomId: code,
+        username: currentUser.name,
+        title,
+        location
+    });
+
+    console.log("✅ Emit sent, waiting for response...");
+
+    // تنبيه بعد 5 ثواني إذا لم يتم الرد
+    const timeoutId = setTimeout(() => {
+        if (submitBtn && submitBtn.disabled) {
+            console.warn("⚠️ No response from server after 5 seconds");
+            submitBtn.disabled = false;
+            submitBtn.textContent = "إنشاء الجلسة";
+            if (errorEl) { errorEl.textContent = "انتظر قليلاً... حدث خطأ في الاتصال"; errorEl.style.display = "block"; }
+        }
+    }, 5000);
+}
+
+socket.on("publicRoomsList", (data) => {
+    const container = document.getElementById("public-rooms-list");
+    if (!container) return;
+
+    const rooms = data.rooms || [];
+
+    if (rooms.length === 0) {
+        container.innerHTML = `<p style="opacity:.5;text-align:center;padding:24px;">لا توجد جلسات متاحة حالياً.<br>أنشئ جلسة جديدة لتبدأ!</p>`;
+        return;
+    }
+
+    container.innerHTML = rooms.map(r => {
+        const spotsText = r.spotsLeft === 1 ? "متبقي مقعد واحد" : `متبقي ${r.spotsLeft} مقاعد`;
+        const locationText = r.location ? `<p style="opacity:.6;font-size:.85rem;margin:2px 0;">📍 ${r.location}</p>` : "";
+        return `
+            <div class="room-card" style="margin-bottom:12px;padding:14px;cursor:default;">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+                    <div>
+                        <strong>${r.title}</strong>
+                        ${locationText}
+                        <p style="opacity:.6;font-size:.85rem;margin:4px 0;">منظم: ${r.hostName}</p>
+                        <p style="opacity:.6;font-size:.85rem;margin:2px 0;">👥 ${r.playersCount}/4 — ${spotsText}</p>
+                    </div>
+                    <button onclick="joinPublicRoom('${r.roomId}')"
+                        style="padding:8px 16px;border-radius:8px;background:#3a7bd5;color:#fff;border:none;cursor:pointer;font-size:.9rem;white-space:nowrap;">
+                        انضمام
+                    </button>
+                </div>
+            </div>
+        `;
+    }).join("");
+});
+
+function joinPublicRoom(roomId) {
+    if (!currentUser) {
+        showLoginPage();
+        return;
+    }
+    socket.emit("joinRoom", {
+        roomId,
+        username: currentUser.name,
+        avatar: currentUser.avatar || "images/default-avatar.png"
+    });
+}
+
+// تحديث قائمة الجلسات عند إنشاء جلسة جديدة
+socket.on("getPublicRoomsUpdate", () => {
+    console.log("📢 تحديث قائمة الجلسات");
+    socket.emit("getPublicRooms");
+});
+
+function toggleMobilePanel() {
+    const panel = document.querySelector('.left-panel');
+    const overlay = document.getElementById('mobile-panel-overlay');
+    if (!panel) return;
+    const isOpen = panel.classList.toggle('panel-open');
+    if (overlay) overlay.classList.toggle('active', isOpen);
+}
+
 function saveGame() {
     if (!gameState) return;
 
@@ -2003,7 +2401,7 @@ socket.on("matchFound", (data) => {
     saveLastRoom();
     onlineRoomPlayers = data.players || [];
 
-    myOnlineIndex = onlineRoomPlayers.findIndex(p => p.id === socket.id);
+    myOnlineIndex = onlineRoomPlayers.findIndex(p => p?.id === socket.id);
 
     console.log("MATCH FOUND:", data);
     console.log("myOnlineIndex:", myOnlineIndex);
@@ -2034,6 +2432,8 @@ socket.on("receiveGameState", (data) => {
 });
 
 socket.on("roomCreated", (data) => {
+    console.log("🎉 roomCreated event received:", data);
+    
     onlineRoomId = data.roomId;
     saveLastRoom();
     myOnlineIndex = data.playerIndex;
@@ -2043,18 +2443,23 @@ socket.on("roomCreated", (data) => {
     const joinError = document.getElementById("joinCodeError");
     if (joinError) joinError.textContent = "";
 
+    console.log("📍 Going to lobby with roomId:", onlineRoomId);
     showLobby(data.roomId, onlineRoomPlayers, data.isHost);
 });
 
 socket.on("roomJoined", (data) => {
     if (!data?.roomId) return;
 
+    console.log("🔔 roomJoined event:", data.roomId, "index:", data.playerIndex);
+    
     onlineRoomId = String(data.roomId).toUpperCase();
     saveLastRoom();
 
     onlineRoomPlayers = data.players || [];
-    myOnlineIndex = onlineRoomPlayers.findIndex(p => p.id === socket.id);
-    isRoomHost = onlineRoomPlayers[0]?.id === socket.id;
+    myOnlineIndex = onlineRoomPlayers.findIndex(p => p?.id === socket.id);
+    isRoomHost = data.isHost === true;
+
+    console.log("✅ Updated onlineRoomId to:", onlineRoomId, "myIndex:", myOnlineIndex);
 
     if (data.gameState) {
         gameState = data.gameState;
@@ -2078,6 +2483,22 @@ socket.on("roomJoined", (data) => {
     showLobby(onlineRoomId, onlineRoomPlayers, isRoomHost);
 });
 
+socket.on("playerJoined", (data) => {
+    if (!data?.roomId) return;
+    if (data.roomId !== onlineRoomId) return; // تجاهل إذا كان من غرفة أخرى
+
+    onlineRoomPlayers = data.players || [];
+    
+    // تحديث موقع اللاعب في الغرفة
+    myOnlineIndex = onlineRoomPlayers.findIndex(p => p?.id === socket.id);
+    
+    console.log(`🎮 لاعب جديد انضم! عدد اللاعبين الآن: ${data.playersCount}, myIndex: ${myOnlineIndex}`);
+    
+    // تحديث واجهة اللوبي إذا كنا في الانتظار
+    if (document.getElementById("waitingRoom")) {
+        showLobby(onlineRoomId, onlineRoomPlayers, isRoomHost);
+    }
+});
 
 socket.on("joinError", (data) => {
     const errorBox = document.getElementById("joinCodeError");
@@ -2089,22 +2510,36 @@ socket.on("joinError", (data) => {
     showMessage(data?.message || "تعذر الانضمام إلى الغرفة", 4000);
 });
 
+socket.on("roomClosed", (data) => {
+    clearLastRoom();
+    onlineRoomId = null;
+    onlineRoomPlayers = [];
+    myOnlineIndex = 0;
+    isRoomHost = false;
+    showMessage("غادر منشئ الغرفة - تم إغلاق الغرفة", 4000);
+    setTimeout(() => showMainMenu(), 500);
+});
+
 function startOnlineGame(data) {
     onlineRoomId = data.roomId;
     saveLastRoom();
     onlineRoomPlayers = data.players || [];
-    myOnlineIndex = onlineRoomPlayers.findIndex(p => p.id === socket.id);
+    myOnlineIndex = onlineRoomPlayers.findIndex(p => p?.id === socket.id);
 
     selectedDecks = data.decks || 5;
-     console.log("عدد الرزمات قبل التوزيع:", selectedDecks);
+    console.log("عدد الرزمات قبل التوزيع:", selectedDecks);
 
     if (myOnlineIndex === 0) {
+        // الهوست ينشئ اللعبة ويرسلها للآخرين
         startGame();
 
         socket.emit("sendGameState", {
             roomId: onlineRoomId,
             gameState: gameState
         });
+    } else {
+        // اللاعبون غير الهوست ينتظرون استقبال اللعبة من السيرفر
+        console.log("في انتظار توزيع اللعبة من الهوست...");
     }
 }
 
@@ -2123,6 +2558,43 @@ function syncOnlineGame() {
         objectionPlayer
     });
 }
+
+socket.on("chatMessage", (data) => {
+    appendChatMessage(data);
+});
+
+socket.on("leaderboardData", (data) => {
+    console.log("📋 Received leaderboard data:", data);
+    
+    // تحديث أفضل لاعب أسبوعياً
+    const weeklyName = document.getElementById("weekly-name");
+    const weeklyPoints = document.getElementById("weekly-points");
+    if (weeklyName && weeklyPoints) {
+        weeklyName.textContent = data.weekly?.username || "—";
+        weeklyPoints.textContent = (data.weekly?.weeklyPoints || 0) + " نقطة";
+    }
+    
+    // تحديث أفضل لاعب شهرياً
+    const monthlyName = document.getElementById("monthly-name");
+    const monthlyPoints = document.getElementById("monthly-points");
+    if (monthlyName && monthlyPoints) {
+        monthlyName.textContent = data.monthly?.username || "—";
+        monthlyPoints.textContent = (data.monthly?.monthlyPoints || 0) + " نقطة";
+    }
+    
+    // تحديث أكثر اللاعبين فوزاً
+    const winnerName = document.getElementById("winner-name");
+    const winnerWins = document.getElementById("winner-wins");
+    if (winnerName && winnerWins) {
+        winnerName.textContent = data.winner?.username || "—";
+        winnerWins.textContent = (data.winner?.wins || 0) + " انتصار";
+    }
+});
+
+socket.on("leaderboardUpdated", () => {
+    console.log("📊 Leaderboard updated, requesting new data...");
+    socket.emit("getLeaderboard");
+});
 
 socket.on("gameSynced", (data) => {
     if (roundEnded) return;
